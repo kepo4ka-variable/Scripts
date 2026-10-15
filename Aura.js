@@ -109,9 +109,7 @@ addAllSettings(module_Killaura, [
     buttrot, rotationMode, rotSpeed, radiusRot, spookyFov, spookySpeed
 ]);
 
-var fixedTarget = -1;
 var fixedTargetEntity = null;
-var rotTarget = -1;
 var rotTargetEntity = null;
 var switchTargets = [];
 var switchIndex = 0;
@@ -126,18 +124,24 @@ function isSwordId(id) {
     return id === 276 || id === 267 || id === 272 || id === 268 || id === 283;
 }
 
+function getItemId(item) {
+    if (!item) return -1;
+    try { return item.getId(); } catch (e) {}
+    try { return item.getID(); } catch (e2) {}
+    return -1;
+}
+
 function findSwordSlot() {
     var now = Date.now();
     if (now - swordSlotCacheTime < 500 && swordSlotCache !== -1) return swordSlotCache;
     swordSlotCacheTime = now;
     for (var i = 0; i < 9; i++) {
-        try {
-            var item = Inventory.getItem(i);
-            if (item && isSwordId(item.getId())) {
-                swordSlotCache = i;
-                return i;
-            }
-        } catch (e) {}
+        var item = null;
+        try { item = Inventory.getItem(i); } catch (e) { continue; }
+        if (item && isSwordId(getItemId(item))) {
+            swordSlotCache = i;
+            return i;
+        }
     }
     swordSlotCache = -1;
     return -1;
@@ -147,9 +151,7 @@ function selectAutoSword() {
     if (!autoEquip.isActive() && !autoSword.isActive()) return;
     var slot = findSwordSlot();
     if (slot === -1) return;
-    try {
-        if (Inventory.getSelectedSlot() === slot) return;
-    } catch (e) {}
+    try { if (Inventory.getSelectedSlot() === slot) return; } catch (e) {}
     try { Inventory.selectSlot(slot); } catch (e2) {}
 }
 
@@ -173,9 +175,9 @@ function rotateSmooth(targetYaw, targetPitch, speedMs) {
     LocalPlayer.setPitch(curPitch);
 }
 
-function rotateInstant(targetYaw, targetPitch) {
-    LocalPlayer.setYaw(targetYaw);
-    LocalPlayer.setPitch(targetPitch);
+function rotateInstant(y, p) {
+    LocalPlayer.setYaw(y);
+    LocalPlayer.setPitch(p);
 }
 
 function computeRotToEntity(entity) {
@@ -185,22 +187,20 @@ function computeRotToEntity(entity) {
     var dy = ep[1] - pp[1];
     var dz = ep[2] - pp[2];
     var distXZ = Math.sqrt(dx * dx + dz * dz);
-    var yaw = Math.atan2(-dx, dz) * 180 / Math.PI;
-    var pitch = Math.atan2(-dy, distXZ) * 180 / Math.PI;
-    return [yaw, pitch];
+    return [
+        Math.atan2(-dx, dz) * 180 / Math.PI,
+        Math.atan2(-dy, distXZ) * 180 / Math.PI
+    ];
 }
 
 function applyAuraRotation() {
-    if (!module_Killaura.isActive()) return;
-    if (!rotTargetEntity) return;
+    if (!module_Killaura.isActive() || !rotTargetEntity) return;
     var mode = rotationMode.getCurrentMode();
     if (mode === "None") return;
     var r = computeRotToEntity(rotTargetEntity);
-    if (mode === "Vanilla") {
-        rotateSmooth(r[0], r[1], rotSpeed.getCurrentValue());
-    } else if (mode === "Flick") {
-        rotateInstant(r[0], r[1]);
-    } else if (mode === "Spooky") {
+    if (mode === "Vanilla") rotateSmooth(r[0], r[1], rotSpeed.getCurrentValue());
+    else if (mode === "Flick") rotateInstant(r[0], r[1]);
+    else if (mode === "Spooky") {
         spookyPhase += spookySpeed.getCurrentValue() * 0.06;
         if (spookyPhase > Math.PI * 2) spookyPhase -= Math.PI * 2;
         var off = Math.sin(spookyPhase) * (spookyFov.getCurrentValue() / 2);
@@ -215,16 +215,11 @@ function shouldAuraAttack() {
     return false;
 }
 
-function doAutoBlock() {
-    if (!autoBlock.isActive()) return;
-    try { LocalPlayer.click(true); } catch (e) {}
-}
-
 function executeAuraAttack() {
     selectAutoSword();
-    doAutoBlock();
+    if (autoBlock.isActive()) { try { LocalPlayer.click(true); } catch (e) {} }
     applyAuraRotation();
-    try { LocalPlayer.attack(fixedTargetEntity); } catch (e) {}
+    try { LocalPlayer.attack(fixedTargetEntity); } catch (e2) {}
 }
 
 function performAuraAttack() {
@@ -243,10 +238,8 @@ function handlePostAttackActions() {
     }
     if (switchTargets.length > 0) {
         fixedTargetEntity = switchTargets[switchIndex];
-        fixedTarget = fixedTargetEntity.getId();
         switchCooldown = switchDelay.getCurrentValue();
     } else {
-        fixedTarget = -1;
         fixedTargetEntity = null;
     }
 }
@@ -283,13 +276,17 @@ function auraRefreshTick() {
     }
 }
 
-function entityInList(list, entity) {
-    if (!entity) return false;
-    var id = entity.getId();
-    for (var i = 0; i < list.length; i++) {
-        if (list[i].getId() === id) return true;
-    }
-    return false;
+function isValidEntity(e) {
+    if (!e) return false;
+    try { if (e.isLocalPlayer()) return false; } catch (err) {}
+    try { if (!e.isAlive()) return false; } catch (err) {}
+    try { if (e.isTeammate()) return false; } catch (err) {}
+    try { if (e.isFriend()) return false; } catch (err) {}
+    try { if (!e.isValidTarget()) return false; } catch (err) {}
+    var name = e.getNameTag();
+    if (!name) return false;
+    if (auraTick.localName && ("" + name).toLowerCase().indexOf(auraTick.localName) !== -1) return false;
+    return true;
 }
 
 function getAuraCPS() {
@@ -304,9 +301,9 @@ function rollAuraAttackDelay() {
     auraNextAttackDelay = 1000 / Math.max(1, getAuraCPS());
 }
 
-function isInFOV(entity) {
+function isInFOV(e) {
     if (!auraTick.fovOn) return true;
-    var ep = entity.getPos();
+    var ep = e.getPos();
     var dx = ep[0] - auraTick.lx;
     var dy = ep[1] - auraTick.ly;
     var dz = ep[2] - auraTick.lz;
@@ -315,21 +312,33 @@ function isInFOV(entity) {
     var playerYaw = wrapAngle(LocalPlayer.getYaw());
     var playerPitch = LocalPlayer.getPitch();
     var distXZ = Math.sqrt(distXZSq);
-    var targetYaw = wrapAngle(Math.atan2(-dx, dz) * (180 / Math.PI));
-    var targetPitch = Math.atan2(-dy, distXZ) * (180 / Math.PI);
+    var targetYaw = wrapAngle(Math.atan2(-dx, dz) * 180 / Math.PI);
+    var targetPitch = Math.atan2(-dy, distXZ) * 180 / Math.PI;
     return Math.abs(wrapAngle(targetYaw - playerYaw)) <= auraTick.fovXZ / 2
         && Math.abs(targetPitch - playerPitch) <= auraTick.fovY / 2;
 }
 
-function isValidTargetEntity(entity) {
-    if (!entity) return false;
-    if (!entity.isAlive()) return false;
-    var d = LocalPlayer.getDistanceTo(entity);
-    if (d * d > auraTick.radiusSq) return false;
-    if (auraTick.fovOn && !isInFOV(entity)) return false;
-    var name = entity.getNameTag();
-    if (!name) return false;
-    if (auraTick.localName && ("" + name).toLowerCase().indexOf(auraTick.localName) !== -1) return false;
+function getDistanceSq(e) {
+    try { var d = LocalPlayer.getDistanceTo(e); return d * d; }
+    catch (err) {
+        var pp = LocalPlayer.getPos();
+        var ep = e.getPos();
+        var dx = ep[0] - pp[0], dy = ep[1] - pp[1], dz = ep[2] - pp[2];
+        return dx * dx + dy * dy + dz * dz;
+    }
+}
+
+function isValidTargetForAttack(e) {
+    if (!isValidEntity(e)) return false;
+    if (getDistanceSq(e) > auraTick.radiusSq) return false;
+    if (auraTick.fovOn && !isInFOV(e)) return false;
+    return true;
+}
+
+function isValidTargetForRotation(e) {
+    if (!isValidEntity(e)) return false;
+    if (getDistanceSq(e) > auraTick.radiusRotSq) return false;
+    if (auraTick.fovOn && !isInFOV(e)) return false;
     return true;
 }
 
@@ -340,67 +349,44 @@ function getValidPlayers() {
     var players = Level.getPlayers();
     var result = [];
     for (var i = 0; i < players.length; i++) {
-        var e = players[i];
-        if (isValidTargetEntity(e)) result.push(e);
+        if (isValidTargetForAttack(players[i])) result.push(players[i]);
     }
     cachedPlayers = result;
     return result;
 }
 
-function isValidRotationTarget(entity) {
-    if (!entity) return false;
-    if (!entity.isAlive()) return false;
-    var d = LocalPlayer.getDistanceTo(entity);
-    if (d * d > auraTick.radiusRotSq) return false;
-    if (auraTick.fovOn && !isInFOV(entity)) return false;
-    var name = entity.getNameTag();
-    if (!name) return false;
-    if (auraTick.localName && ("" + name).toLowerCase().indexOf(auraTick.localName) !== -1) return false;
-    return true;
+function getNearestEntityInRange(radius) {
+    var players = Level.getPlayers();
+    var best = null;
+    var bestSq = radius * radius;
+    for (var i = 0; i < players.length; i++) {
+        var e = players[i];
+        if (!isValidEntity(e)) continue;
+        var d = getDistanceSq(e);
+        if (d < bestSq) { bestSq = d; best = e; }
+    }
+    return best;
 }
 
 function updateAuraRotationTarget() {
     if (rotationMode.getCurrentMode() === "None") {
-        rotTarget = -1;
         rotTargetEntity = null;
         return;
     }
-    if (fixedTargetEntity && isValidRotationTarget(fixedTargetEntity)) {
-        rotTarget = fixedTargetEntity.getId();
+    if (fixedTargetEntity && isValidTargetForRotation(fixedTargetEntity)) {
         rotTargetEntity = fixedTargetEntity;
         return;
     }
     var players = Level.getPlayers();
-    var nearest = null;
-    var best = auraTick.radiusRotSq;
-    for (var i = 0; i < players.length; i++) {
-        var e = players[i];
-        if (!isValidRotationTarget(e)) continue;
-        var d = LocalPlayer.getDistanceTo(e);
-        var dsq = d * d;
-        if (dsq < best) { best = dsq; nearest = e; }
-    }
-    if (nearest) {
-        rotTarget = nearest.getId();
-        rotTargetEntity = nearest;
-    } else {
-        rotTarget = -1;
-        rotTargetEntity = null;
-    }
-}
-
-function getNearestEntityInRange(radius) {
-    var players = Level.getPlayers();
     var best = null;
-    var bestDistSq = radius * radius;
+    var bestSq = auraTick.radiusRotSq;
     for (var i = 0; i < players.length; i++) {
         var e = players[i];
-        if (!e || !e.isAlive()) continue;
-        var d = LocalPlayer.getDistanceTo(e);
-        var dsq = d * d;
-        if (dsq < bestDistSq) { bestDistSq = dsq; best = e; }
+        if (!isValidTargetForRotation(e)) continue;
+        var d = getDistanceSq(e);
+        if (d < bestSq) { bestSq = d; best = e; }
     }
-    return best;
+    rotTargetEntity = best;
 }
 
 function onTick() {
@@ -410,7 +396,6 @@ function onTick() {
         updateAuraRotationTarget();
         applyAuraRotation();
     } else {
-        rotTarget = -1;
         rotTargetEntity = null;
     }
 
@@ -427,24 +412,15 @@ function onTick() {
     var players = getValidPlayers();
     var modeKA = mode_KA.getCurrentMode();
 
-    if (fixedTargetEntity) {
-        var stillOk = entityInList(players, fixedTargetEntity);
-        var dist = LocalPlayer.getDistanceTo(fixedTargetEntity);
-        if (dist > auraTick.radiusPlus1 || !isValidTargetEntity(fixedTargetEntity)) {
-            fixedTarget = -1;
-            fixedTargetEntity = null;
-            if (modeKA === "Switch") { switchTargets = []; switchIndex = 0; }
-        } else if (!stillOk && dist > auraTick.radiusPlus1) {
-            fixedTarget = -1;
-            fixedTargetEntity = null;
-            if (modeKA === "Switch") { switchTargets = []; switchIndex = 0; }
-        }
+    if (fixedTargetEntity && (!isValidTargetForAttack(fixedTargetEntity)
+        || getDistanceSq(fixedTargetEntity) > auraTick.radiusPlus1 * auraTick.radiusPlus1)) {
+        fixedTargetEntity = null;
+        if (modeKA === "Switch") { switchTargets = []; switchIndex = 0; }
     }
 
     if (modeKA === "Single") {
-        if (!fixedTargetEntity || !isValidTargetEntity(fixedTargetEntity)) {
+        if (!fixedTargetEntity || !isValidTargetForAttack(fixedTargetEntity)) {
             fixedTargetEntity = players.length > 0 ? players[0] : null;
-            fixedTarget = fixedTargetEntity ? fixedTargetEntity.getId() : -1;
         }
     }
 
@@ -454,13 +430,12 @@ function onTick() {
             switchIndex = 0;
         }
         if (switchTargets.length > 0) {
-            if (!fixedTargetEntity || !isValidTargetEntity(fixedTargetEntity)) {
+            if (!fixedTargetEntity || !isValidTargetForAttack(fixedTargetEntity)) {
                 var found = false;
                 for (var si = 0; si < switchTargets.length; si++) {
-                    if (isValidTargetEntity(switchTargets[si])) {
+                    if (isValidTargetForAttack(switchTargets[si])) {
                         switchIndex = si;
                         fixedTargetEntity = switchTargets[si];
-                        fixedTarget = fixedTargetEntity.getId();
                         found = true;
                         break;
                     }
@@ -469,12 +444,10 @@ function onTick() {
                     switchTargets = players.slice();
                     switchIndex = 0;
                     fixedTargetEntity = switchTargets.length > 0 ? switchTargets[0] : null;
-                    fixedTarget = fixedTargetEntity ? fixedTargetEntity.getId() : -1;
                 }
             }
             if (switchCooldown > 0) switchCooldown--;
         } else {
-            fixedTarget = -1;
             fixedTargetEntity = null;
             switchCooldown = 0;
         }
@@ -517,9 +490,7 @@ module_Killaura.setOnToggleListener(function() {
 
 function onScriptEnabled() {
     ModuleManager.addModule(module_Killaura);
-    fixedTarget = -1;
     fixedTargetEntity = null;
-    rotTarget = -1;
     rotTargetEntity = null;
     switchTargets = [];
     switchIndex = 0;
